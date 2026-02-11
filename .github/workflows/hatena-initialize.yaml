@@ -83,6 +83,7 @@ jobs:
             --body "Synced existing articles from Hatena Blog." \
             --base main \
             --head "$branch" \
-            --label "skip-push"
+            --label "skip-push" \
+            --reviewer okojoalg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
