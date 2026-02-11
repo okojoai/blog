@@ -4,15 +4,87 @@ on:
   workflow_dispatch:
     inputs:
       title:
-        description: "記事のタイトル"
+        description: "Article title"
         required: true
         type: string
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   create-draft:
-    uses: hatena/hatenablog-workflows/.github/workflows/create-draft.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
-    with:
-      title: ${{ inputs.title }}
-      BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
-    secrets:
-      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: create draft on hatena blog
+        id: post
+        run: |
+          entry_file=$(BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync post --draft --title="${{ inputs.title }}" --custom-path="" "${{ vars.BLOG_DOMAIN }}" < draft.template)
+          echo "entry_file=${entry_file}" >> "$GITHUB_OUTPUT"
+          echo "Created: ${entry_file}"
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+
+      - name: move to draft_entries
+        id: draft
+        run: |
+          mkdir -p draft_entries
+          file="${{ steps.post.outputs.entry_file }}"
+          entry_id=$(grep '^EditURL:' "$file" | grep -oP '/\K[0-9]+$')
+          edit_url=$(grep '^EditURL:' "$file" | sed 's/^EditURL: //')
+
+          # Remove Date and URL, keep EditURL and Draft
+          sed -i '/^Date:/d; /^URL:/d' "$file"
+
+          draft_path="draft_entries/${entry_id}.md"
+          mv "$file" "$draft_path"
+
+          echo "draft_path=${draft_path}" >> "$GITHUB_OUTPUT"
+          echo "entry_id=${entry_id}" >> "$GITHUB_OUTPUT"
+          echo "edit_url=${edit_url}" >> "$GITHUB_OUTPUT"
+
+          # Build preview URL
+          owner=$(yq '.["${{ vars.BLOG_DOMAIN }}"].username' blogsync.yaml)
+          echo "preview_url=https://blog.hatena.ne.jp/${owner}/${{ vars.BLOG_DOMAIN }}/atom/entry/${entry_id}" >> "$GITHUB_OUTPUT"
+
+      - name: create pull request
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hatena/
+          branch="hatena/draft-${{ steps.draft.outputs.entry_id }}"
+          git checkout -b "$branch"
+          git commit -m "docs(hatena): create draft - ${{ inputs.title }}"
+          git push origin "$branch"
+
+          body=$(cat <<PREOF
+          ## ${{ inputs.title }}
+
+          - [Edit on Hatena Blog](${{ steps.draft.outputs.edit_url }})
+
+          ### Checklist
+          - [ ] 記事の内容を確認した
+          - [ ] カテゴリを設定した
+          - [ ] \`Draft: true\` を削除して公開する準備ができた
+          PREOF
+          )
+
+          gh pr create \
+            --title "${{ inputs.title }}" \
+            --body "$body" \
+            --base main \
+            --head "$branch" \
+            --draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

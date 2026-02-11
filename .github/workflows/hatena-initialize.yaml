@@ -4,15 +4,85 @@ on:
   workflow_dispatch:
     inputs:
       is_draft_included:
-        description: "同期対象に下書きを含める"
+        description: "Include drafts in sync"
         required: true
         type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   initialize:
-    uses: hatena/hatenablog-workflows/.github/workflows/initialize.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
-    with:
-      is_draft_included: ${{ inputs.is_draft_included }}
-      BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
-    secrets:
-      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: configure blogsync
+        run: |
+          sed -i "s/username: .*/username: $(yq '.["${{ vars.BLOG_DOMAIN }}"].username' blogsync.yaml)/" blogsync.yaml
+          cat blogsync.yaml
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+
+      - name: pull all entries
+        run: |
+          BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync pull "${{ vars.BLOG_DOMAIN }}"
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+
+      - name: separate drafts
+        if: inputs.is_draft_included
+        run: |
+          mkdir -p draft_entries
+          find entries -name '*.md' | while read -r file; do
+            if grep -q '^Draft: true' "$file"; then
+              entry_id=$(grep '^EditURL:' "$file" | grep -oP '/\K[0-9]+$')
+              if [ -n "$entry_id" ]; then
+                # Remove Date and URL from draft metadata
+                sed -i '/^Date:/d; /^URL:/d' "$file"
+                mv "$file" "draft_entries/${entry_id}.md"
+              fi
+            fi
+          done
+
+      - name: delete remaining draft files from entries
+        if: "!inputs.is_draft_included"
+        run: |
+          find entries -name '*.md' | while read -r file; do
+            if grep -q '^Draft: true' "$file"; then
+              rm "$file"
+            fi
+          done
+
+      - name: create pull request
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hatena/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          branch="hatena/initialize-$(date +%s)"
+          git checkout -b "$branch"
+          git commit -m "chore(hatena): initialize entries from hatena blog"
+          git push origin "$branch"
+          gh pr create \
+            --title "initialize" \
+            --body "Synced existing articles from Hatena Blog." \
+            --base main \
+            --head "$branch" \
+            --label "skip-push"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

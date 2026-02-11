@@ -6,12 +6,48 @@ on:
       - main
     types: [closed]
     paths:
-      - "entries/**"
+      - "hatena/entries/**"
+
+permissions:
+  contents: read
 
 jobs:
   push:
-    uses: hatena/hatenablog-workflows/.github/workflows/push.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
-    with:
-      local_root: "entries"
-    secrets:
-      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'skip-push')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: detect changed entries
+        id: changes
+        working-directory: .
+        run: |
+          files=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD -- 'hatena/entries/' | grep '\.md$' || true)
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$files" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: push entries to hatena blog
+        if: steps.changes.outputs.files != ''
+        run: |
+          echo "${{ steps.changes.outputs.files }}" | while read -r file; do
+            [ -z "$file" ] && continue
+            # Convert from repo-root path to hatena-relative path
+            relative="${file#hatena/}"
+            if ! grep -q '^Draft: true' "$relative"; then
+              echo "Pushing: $relative"
+              BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync push "$relative"
+            fi
+          done
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}

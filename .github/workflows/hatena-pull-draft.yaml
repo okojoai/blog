@@ -4,15 +4,72 @@ on:
   workflow_dispatch:
     inputs:
       title:
-        description: "取得する下書きのタイトル"
+        description: "Draft title to pull"
         required: true
         type: string
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   pull-draft:
-    uses: hatena/hatenablog-workflows/.github/workflows/pull-draft.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
-    with:
-      title: ${{ inputs.title }}
-      BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
-    secrets:
-      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: pull all entries and find draft
+        id: draft
+        run: |
+          BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync pull "${{ vars.BLOG_DOMAIN }}"
+
+          mkdir -p draft_entries
+          found=""
+          find entries -name '*.md' | while read -r file; do
+            title=$(grep '^Title:' "$file" | sed 's/^Title: //')
+            if [ "$title" = "${{ inputs.title }}" ] && grep -q '^Draft: true' "$file"; then
+              entry_id=$(grep '^EditURL:' "$file" | grep -oP '/\K[0-9]+$')
+              sed -i '/^Date:/d; /^URL:/d' "$file"
+              mv "$file" "draft_entries/${entry_id}.md"
+              echo "entry_id=${entry_id}" >> "$GITHUB_OUTPUT"
+              echo "found=true" >> "$GITHUB_OUTPUT"
+              break
+            fi
+          done
+
+          # Clean up non-draft pulled files
+          git checkout -- entries/ 2>/dev/null || true
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+
+      - name: create pull request
+        if: steps.draft.outputs.found == 'true'
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hatena/draft_entries/
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          branch="hatena/draft-${{ steps.draft.outputs.entry_id }}"
+          git checkout -b "$branch"
+          git commit -m "docs(hatena): pull draft - ${{ inputs.title }}"
+          git push origin "$branch"
+          gh pr create \
+            --title "${{ inputs.title }}" \
+            --body "Pulled draft from Hatena Blog." \
+            --base main \
+            --head "$branch" \
+            --draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

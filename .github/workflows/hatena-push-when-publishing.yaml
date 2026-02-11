@@ -6,10 +6,93 @@ on:
       - main
     types: [closed]
     paths:
-      - "draft_entries/**"
+      - "hatena/draft_entries/**"
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
-  push-when-publishing:
-    uses: hatena/hatenablog-workflows/.github/workflows/push-when-publishing-from-draft.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
-    secrets:
-      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+  publish:
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'skip-push')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: find entries to publish
+        id: publish
+        working-directory: .
+        run: |
+          files_to_publish=""
+          changed=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD -- 'hatena/draft_entries/' | grep '\.md$' || true)
+          for file in $changed; do
+            relative="${file#hatena/}"
+            # Check if Draft: true was removed (ready to publish)
+            if [ -f "hatena/$relative" ] && ! grep -q '^Draft: true' "hatena/$relative"; then
+              files_to_publish="${files_to_publish}${file}\n"
+            fi
+          done
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$files_to_publish" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: publish and move to entries
+        if: steps.publish.outputs.files != ''
+        run: |
+          echo "${{ steps.publish.outputs.files }}" | while read -r file; do
+            [ -z "$file" ] && continue
+            relative="${file#hatena/}"
+            echo "Publishing: $relative"
+
+            # Push to hatena blog (removes draft status)
+            BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync push "$relative"
+
+            # Fetch updated entry to get the published URL
+            BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync fetch "$relative"
+
+            # Move from draft_entries to entries
+            entry_url=$(grep '^URL:' "$relative" | sed 's/^URL: //')
+            if [ -n "$entry_url" ]; then
+              # Derive the entries path from URL
+              path_part=$(echo "$entry_url" | grep -oP '(?<=\.ai/).*')
+              dest="entries/${{ vars.BLOG_DOMAIN }}/${path_part}.md"
+              mkdir -p "$(dirname "$dest")"
+              mv "$relative" "$dest"
+            fi
+          done
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+
+      - name: create pull request for move
+        if: steps.publish.outputs.files != ''
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hatena/
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          branch="hatena/publish-$(date +%s)"
+          git checkout -b "$branch"
+          git commit -m "docs(hatena): move published entries from drafts"
+          git push origin "$branch"
+          gh pr create \
+            --title "move published entries" \
+            --body "Moved published entries from draft_entries to entries." \
+            --base main \
+            --head "$branch" \
+            --label "skip-push"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
