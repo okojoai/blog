@@ -112,9 +112,10 @@ jobs:
 ## Article Auto-Generated from arXiv
 
 - **arXiv**: https://arxiv.org/abs/${ARXIV_ID}
+- **Quality Score**: ${SCORE}/30
 - [Edit on Hatena Blog](${EDIT_URL})
 
-> This article was auto-generated from an arXiv paper by Claude API.
+> Auto-generated from the highest-scoring paper out of 20 candidates.
 
 ### Checklist
 - [ ] 記事の内容を確認・修正した
@@ -132,3 +133,4 @@ PREOF
           ARXIV_ID: ${{ steps.generate.outputs.arxiv_id }}
           ENTRY_ID: ${{ steps.draft.outputs.entry_id }}
           EDIT_URL: ${{ steps.draft.outputs.edit_url }}
+          SCORE: ${{ steps.generate.outputs.score }}

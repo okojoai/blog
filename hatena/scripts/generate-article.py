@@ -22,7 +22,9 @@ from urllib.request import Request, urlopen
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL = "claude-sonnet-4-5-20250929"
+SCORING_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 8192
+FETCH_COUNT = 20
 
 # arXiv Atom namespace
 ATOM_NS = "{http://www.w3.org/2005/Atom}"
@@ -150,6 +152,114 @@ def find_existing_arxiv_ids(entries_dir: Path, drafts_dir: Path) -> set[str]:
     return existing_ids
 
 
+SCORING_PROMPT = """\
+You are an expert tech blog editor at an AI/CV startup.
+Score each paper on how suitable it is for an engaging, insightful tech blog post.
+
+Scoring criteria (each 1-10):
+- **novelty**: How novel and groundbreaking is the approach?
+- **practical**: How useful is this for engineers in production? (edge deployment, real datasets, etc.)
+- **excitement**: How likely are engineers to share this and say "this is cool"?
+
+Return ONLY a JSON array (no markdown fences) with objects containing:
+- "index": the paper's index number (0-based)
+- "novelty": score 1-10
+- "practical": score 1-10
+- "excitement": score 1-10
+- "total": sum of the three scores
+- "reason": one-sentence explanation in Japanese
+
+Papers:
+"""
+
+
+def _call_claude_api(
+    api_key: str,
+    model: str,
+    user_message: str,
+    max_tokens: int,
+) -> str:
+    """Claude API を呼び出してテキストレスポンスを返す.
+
+    Args:
+        api_key: Anthropic API キー
+        model: モデル名
+        user_message: ユーザーメッセージ
+        max_tokens: 最大トークン数
+
+    Returns:
+        レスポンステキスト
+    """
+    payload = json.dumps({
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "user", "content": user_message},
+        ],
+    }).encode("utf-8")
+
+    req = Request(
+        ANTHROPIC_API_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+
+    with urlopen(req, timeout=120) as resp:
+        result = json.loads(resp.read())
+
+    if result.get("type") == "error":
+        error_msg = result.get("error", {}).get("message", "Unknown error")
+        raise RuntimeError(f"Claude API error: {error_msg}")
+
+    content_blocks = result.get("content", [])
+    text_parts = [block["text"] for block in content_blocks if block.get("type") == "text"]
+    text = "\n".join(text_parts)
+
+    if not text.strip():
+        raise RuntimeError("Claude API returned empty content")
+
+    return text
+
+
+def score_papers(papers: list[Paper], api_key: str) -> list[dict[str, int | str]]:
+    """Claude API で論文リストをスコアリングし、スコア順にソートして返す.
+
+    Args:
+        papers: スコアリング対象の論文リスト
+        api_key: Anthropic API キー
+
+    Returns:
+        スコア情報のリスト（total降順）
+    """
+    paper_summaries = []
+    for i, p in enumerate(papers):
+        paper_summaries.append(
+            f"[{i}] {p['title']}\n"
+            f"    Categories: {', '.join(p['categories'])}\n"
+            f"    Abstract: {p['abstract'][:500]}"
+        )
+
+    user_message = SCORING_PROMPT + "\n\n".join(paper_summaries)
+
+    print(f"Scoring {len(papers)} papers with {SCORING_MODEL}...")
+    raw = _call_claude_api(api_key, SCORING_MODEL, user_message, max_tokens=4096)
+
+    # JSON 配列をパース（マークダウンフェンスが付いている場合も対処）
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1]
+        cleaned = cleaned.rsplit("```", 1)[0]
+
+    scores: list[dict[str, int | str]] = json.loads(cleaned)
+    scores.sort(key=lambda s: s.get("total", 0), reverse=True)
+    return scores
+
+
 def generate_article_with_claude(
     paper: Paper,
     prompt_template: str,
@@ -177,41 +287,7 @@ def generate_article_with_claude(
     )
 
     user_message = f"{prompt_template}\n{paper_info}"
-
-    payload = json.dumps({
-        "model": CLAUDE_MODEL,
-        "max_tokens": MAX_TOKENS,
-        "messages": [
-            {"role": "user", "content": user_message},
-        ],
-    }).encode("utf-8")
-
-    req = Request(
-        ANTHROPIC_API_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
-
-    with urlopen(req, timeout=120) as resp:
-        result = json.loads(resp.read())
-
-    if result.get("type") == "error":
-        error_msg = result.get("error", {}).get("message", "Unknown error")
-        raise RuntimeError(f"Claude API error: {error_msg}")
-
-    content_blocks = result.get("content", [])
-    text_parts = [block["text"] for block in content_blocks if block.get("type") == "text"]
-    article = "\n".join(text_parts)
-
-    if not article.strip():
-        raise RuntimeError("Claude API returned empty content")
-
-    return article
+    return _call_claude_api(api_key, CLAUDE_MODEL, user_message, MAX_TOKENS)
 
 
 def build_frontmatter(paper: Paper, category_label: str) -> str:
@@ -307,10 +383,10 @@ def main() -> None:
     category_label = CATEGORY_LABELS.get(category, category)
     print(f"Category: {category} ({category_label})")
 
-    # arXiv から論文取得
+    # arXiv から論文取得（20件）
     print("Fetching papers from arXiv...")
     try:
-        papers = fetch_arxiv_papers(category, max_results=10)
+        papers = fetch_arxiv_papers(category, max_results=FETCH_COUNT)
     except HTTPError as e:
         print(f"Error fetching from arXiv: {e}", file=sys.stderr)
         sys.exit(1)
@@ -334,9 +410,24 @@ def main() -> None:
         print("All recent papers have already been covered", file=sys.stderr)
         sys.exit(1)
 
-    # 最新の1件を選定
-    paper = candidates[0]
-    print(f"Selected: {paper['title']} ({paper['arxiv_id']})")
+    # Claude でスコアリングし、最もスコアの高い論文を選定
+    try:
+        scores = score_papers(candidates, api_key)
+    except (HTTPError, RuntimeError, json.JSONDecodeError) as e:
+        print(f"Scoring failed, falling back to latest paper: {e}", file=sys.stderr)
+        scores = [{"index": 0, "total": 0, "reason": "fallback"}]
+
+    best = scores[0]
+    best_index = int(best.get("index", 0))
+    if best_index < 0 or best_index >= len(candidates):
+        best_index = 0
+
+    paper = candidates[best_index]
+    score_total = best.get("total", "?")
+    score_reason = best.get("reason", "")
+    print(f"Selected (score={score_total}): {paper['title']} ({paper['arxiv_id']})")
+    if score_reason:
+        print(f"  Reason: {score_reason}")
 
     # Claude API で記事生成
     print("Generating article with Claude API...")
@@ -369,7 +460,8 @@ def main() -> None:
         meta_path.write_text(
             f"arxiv_id={paper['arxiv_id']}\n"
             f"title={paper['title']}\n"
-            f"category={category}\n",
+            f"category={category}\n"
+            f"score={score_total}\n",
             encoding="utf-8",
         )
         print(f"Metadata written to: {meta_path}")
