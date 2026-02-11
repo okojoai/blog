@@ -1,0 +1,18 @@
+name: "[hatena] pull draft"
+
+on:
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "取得する下書きのタイトル"
+        required: true
+        type: string
+
+jobs:
+  pull-draft:
+    uses: hatena/hatenablog-workflows/.github/workflows/pull-draft.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
+    with:
+      title: ${{ inputs.title }}
+      BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
+    secrets:
+      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}

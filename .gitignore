@@ -1,0 +1,17 @@
+# Images (use external references)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.svg
+
+# OS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+
+# Node (for future Zenn CLI support)
+node_modules/

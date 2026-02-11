@@ -1,0 +1,4 @@
+tech-blog.okojo.ai:
+  username: <HATENA_ID>
+default:
+  local_root: entries

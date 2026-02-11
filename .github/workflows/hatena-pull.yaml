@@ -1,0 +1,12 @@
+name: "[hatena] pull published entries"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pull:
+    uses: hatena/hatenablog-workflows/.github/workflows/pull.yaml@8564b85b51cda20eb962f0dec3bf3fcff3dd0326 # v2.0.7
+    with:
+      BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
+    secrets:
+      OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
