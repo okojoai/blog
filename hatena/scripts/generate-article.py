@@ -53,32 +53,9 @@ class Paper(TypedDict):
     pdf_url: str
 
 
-def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
-    """arXiv API から最新論文を取得する.
-
-    Args:
-        category: arXiv カテゴリ (e.g., "cs.CV")
-        max_results: 取得する最大件数
-
-    Returns:
-        論文のリスト（新しい順）
-    """
-    query = f"cat:{category}"
-    params = (
-        f"search_query={query}"
-        f"&sortBy=submittedDate"
-        f"&sortOrder=descending"
-        f"&max_results={max_results}"
-    )
-    url = f"{ARXIV_API_URL}?{params}"
-
-    req = Request(url)
-    with urlopen(req, timeout=30) as resp:
-        xml_data = resp.read()
-
-    root = ET.fromstring(xml_data)
+def _parse_arxiv_entries(root: ET.Element) -> list[Paper]:
+    """arXiv API レスポンスの XML から Paper リストをパースする."""
     papers: list[Paper] = []
-
     for entry in root.findall(f"{ATOM_NS}entry"):
         arxiv_id_full = entry.findtext(f"{ATOM_NS}id", "")
         arxiv_id = arxiv_id_full.split("/abs/")[-1] if "/abs/" in arxiv_id_full else arxiv_id_full
@@ -118,8 +95,124 @@ def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
                 pdf_url=pdf_url or f"https://arxiv.org/pdf/{arxiv_id}",
             )
         )
-
     return papers
+
+
+def search_arxiv_by_title(title: str, max_results: int = 3) -> list[Paper]:
+    """arXiv API でタイトル検索を行う.
+
+    Args:
+        title: 検索するタイトル文字列
+        max_results: 取得する最大件数
+
+    Returns:
+        検索結果の論文リスト
+    """
+    from urllib.parse import quote
+
+    query = f"ti:\"{title}\""
+    params = (
+        f"search_query={quote(query)}"
+        f"&sortBy=relevance"
+        f"&max_results={max_results}"
+    )
+    url = f"{ARXIV_API_URL}?{params}"
+
+    try:
+        req = Request(url)
+        with urlopen(req, timeout=15) as resp:
+            xml_data = resp.read()
+        root = ET.fromstring(xml_data)
+        return _parse_arxiv_entries(root)
+    except (HTTPError, ET.ParseError, TimeoutError):
+        return []
+
+
+def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
+    """arXiv API から最新論文を取得する.
+
+    Args:
+        category: arXiv カテゴリ (e.g., "cs.CV")
+        max_results: 取得する最大件数
+
+    Returns:
+        論文のリスト（新しい順）
+    """
+    query = f"cat:{category}"
+    params = (
+        f"search_query={query}"
+        f"&sortBy=submittedDate"
+        f"&sortOrder=descending"
+        f"&max_results={max_results}"
+    )
+    url = f"{ARXIV_API_URL}?{params}"
+
+    req = Request(url)
+    with urlopen(req, timeout=30) as resp:
+        xml_data = resp.read()
+
+    root = ET.fromstring(xml_data)
+    return _parse_arxiv_entries(root)
+
+
+REFERENCE_EXTRACTION_PROMPT = """\
+Extract the names of methods, models, or systems that this paper \
+compares against or builds upon. Return ONLY a JSON array of strings \
+(no markdown fences). Each string should be the method/model name as \
+it would appear in the paper title (e.g., "DETR", "Stable Diffusion", \
+"NeRF"). Return at most 5 items. If none are found, return [].
+
+Abstract:
+"""
+
+
+def extract_referenced_methods(abstract: str, api_key: str) -> list[str]:
+    """論文の abstract から比較・参照されている手法名を抽出する.
+
+    Args:
+        abstract: 論文の概要
+        api_key: Anthropic API キー
+
+    Returns:
+        手法名のリスト（最大5件）
+    """
+    user_message = f"{REFERENCE_EXTRACTION_PROMPT}{abstract}"
+    try:
+        raw = _call_claude_api(api_key, SCORING_MODEL, user_message, max_tokens=256)
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1]
+            cleaned = cleaned.rsplit("```", 1)[0]
+        methods: list[str] = json.loads(cleaned)
+        return methods[:5]
+    except (HTTPError, RuntimeError, json.JSONDecodeError) as e:
+        print(f"  Reference extraction failed: {e}", file=sys.stderr)
+        return []
+
+
+def fetch_reference_papers(
+    methods: list[str],
+    exclude_id: str,
+) -> list[Paper]:
+    """手法名リストから arXiv で原論文を検索して取得する.
+
+    Args:
+        methods: 検索する手法名のリスト
+        exclude_id: 除外する arXiv ID（対象論文自身）
+
+    Returns:
+        見つかった論文のリスト（重複除去済み）
+    """
+    import time
+
+    found: dict[str, Paper] = {}
+    for method in methods:
+        results = search_arxiv_by_title(method, max_results=2)
+        for p in results:
+            if p["arxiv_id"] != exclude_id and p["arxiv_id"] not in found:
+                found[p["arxiv_id"]] = p
+        time.sleep(1)  # arXiv API rate limit
+    return list(found.values())
 
 
 def find_existing_arxiv_ids(entries_dir: Path, drafts_dir: Path) -> set[str]:
@@ -290,12 +383,19 @@ def generate_article_with_claude(
 
     related_section = ""
     if related_papers:
-        lines = ["\n\n# Related Papers (use these for comparison table)"]
+        lines = [
+            "\n\n# Reference Papers",
+            "Below are papers referenced by or related to the target paper.",
+            "Use these for the comparison table and cite them with their arXiv URLs.",
+            "Read each abstract carefully to write an informed comparison.",
+            "",
+        ]
         for rp in related_papers:
             lines.append(
-                f"- [{rp['title']}]({rp['url']}) "
-                f"({', '.join(rp['categories'][:3])}): "
-                f"{rp['abstract'][:200]}..."
+                f"### [{rp['title']}]({rp['url']})\n"
+                f"- **Authors**: {', '.join(rp['authors'][:5])}\n"
+                f"- **Categories**: {', '.join(rp['categories'][:3])}\n"
+                f"- **Abstract**: {rp['abstract']}\n"
             )
         related_section = "\n".join(lines)
 
@@ -440,14 +540,30 @@ def main() -> None:
     if score_reason:
         print(f"  Reason: {score_reason}")
 
-    # 関連論文 = 選定された論文以外の候補
-    related_papers = [p for p in candidates if p["arxiv_id"] != paper["arxiv_id"]]
+    # 比較対象の論文を取得: abstract から参照手法を抽出 → arXiv で検索
+    print("Extracting referenced methods from abstract...")
+    methods = extract_referenced_methods(paper["abstract"], api_key)
+    if methods:
+        print(f"  Found methods: {methods}")
+        print("Fetching reference papers from arXiv...")
+        reference_papers = fetch_reference_papers(methods, exclude_id=paper["arxiv_id"])
+        print(f"  Fetched {len(reference_papers)} reference papers")
+    else:
+        reference_papers = []
+
+    # 関連論文 = 参照手法の原論文 + 同カテゴリの候補論文
+    other_candidates = [p for p in candidates if p["arxiv_id"] != paper["arxiv_id"]]
+    seen_ids = {p["arxiv_id"] for p in reference_papers}
+    for p in other_candidates:
+        if p["arxiv_id"] not in seen_ids:
+            reference_papers.append(p)
+            seen_ids.add(p["arxiv_id"])
 
     # Claude API で記事生成
-    print(f"Generating article with {len(related_papers)} related papers as context...")
+    print(f"Generating article with {len(reference_papers)} related papers as context...")
     try:
         article_body = generate_article_with_claude(
-            paper, prompt_template, api_key, related_papers=related_papers,
+            paper, prompt_template, api_key, related_papers=reference_papers,
         )
     except HTTPError as e:
         print(f"Error calling Claude API: {e}", file=sys.stderr)
