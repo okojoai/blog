@@ -26,7 +26,7 @@ jobs:
       - name: install blogsync
         run: |
           curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
-            | tar xz -C /usr/local/bin blogsync
+            | tar xz --strip-components=1 -C /usr/local/bin blogsync_v0.20.1_linux_amd64/blogsync
 
       - name: detect changed entries
         id: changes
