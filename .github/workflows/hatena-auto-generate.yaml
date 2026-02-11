@@ -1,0 +1,136 @@
+name: "[hatena] auto-generate article"
+
+on:
+  schedule:
+    - cron: "0 1 * * 1-5" # Mon-Fri 10:00 JST (01:00 UTC)
+  workflow_dispatch:
+    inputs:
+      category:
+        description: "arXiv category override (e.g., cs.CV, cs.AI, cs.LG)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: hatena
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install blogsync
+        run: |
+          curl -fsSL "https://github.com/x-motemen/blogsync/releases/download/v0.20.1/blogsync_v0.20.1_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin blogsync
+
+      - name: generate article
+        id: generate
+        run: |
+          category_arg=""
+          if [ -n "$INPUT_CATEGORY" ]; then
+            category_arg="--category $INPUT_CATEGORY"
+          fi
+
+          python scripts/generate-article.py \
+            $category_arg \
+            --output /tmp/generated-article.md \
+            --entries-dir entries \
+            --drafts-dir draft_entries \
+            --metadata-file /tmp/article-meta.env
+
+          cat /tmp/article-meta.env >> "$GITHUB_OUTPUT"
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          INPUT_CATEGORY: ${{ inputs.category }}
+
+      - name: post draft to hatena blog
+        id: post
+        run: |
+          entry_file=$(BLOGSYNC_PASSWORD="${OWNER_API_KEY}" blogsync post \
+            --draft \
+            --title="${PAPER_TITLE}" \
+            --custom-path="" \
+            "$BLOG_DOMAIN" < /tmp/generated-article.md)
+          echo "entry_file=${entry_file}" >> "$GITHUB_OUTPUT"
+        env:
+          OWNER_API_KEY: ${{ secrets.OWNER_API_KEY }}
+          PAPER_TITLE: ${{ steps.generate.outputs.title }}
+          BLOG_DOMAIN: ${{ vars.BLOG_DOMAIN }}
+
+      - name: replace draft with full article
+        id: draft
+        run: |
+          mkdir -p draft_entries
+          file="${ENTRY_FILE}"
+          entry_id=$(grep '^EditURL:' "$file" | grep -oP '/\K[0-9]+$')
+          edit_url=$(grep '^EditURL:' "$file" | sed 's/^EditURL: //')
+
+          # Extract blogsync-added metadata, then replace body with full article (frontmatter included)
+          editurl_line=$(grep '^EditURL:' "$file")
+          cp /tmp/generated-article.full.md "$file"
+          # Append EditURL back into frontmatter
+          sed -i "s|^Draft: true|Draft: true\n${editurl_line}|" "$file"
+          # Remove Date/URL if present
+          sed -i '/^Date:/d; /^URL:/d' "$file"
+
+          draft_path="draft_entries/${entry_id}.md"
+          mv "$file" "$draft_path"
+
+          echo "entry_id=${entry_id}" >> "$GITHUB_OUTPUT"
+          echo "edit_url=${edit_url}" >> "$GITHUB_OUTPUT"
+        env:
+          ENTRY_FILE: ${{ steps.post.outputs.entry_file }}
+
+      - name: create pull request
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add hatena/
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+
+          branch="hatena/auto-${ENTRY_ID}"
+          git checkout -b "$branch"
+          git commit -m "docs(hatena): auto-generate article - ${ARXIV_ID}"
+          git push origin "$branch"
+
+          gh pr create \
+            --title "【論文読み】${PAPER_TITLE}" \
+            --body "$(cat <<PREOF
+## Article Auto-Generated from arXiv
+
+- **arXiv**: https://arxiv.org/abs/${ARXIV_ID}
+- **Quality Score**: ${SCORE}/30
+- [Edit on Hatena Blog](${EDIT_URL})
+
+> Auto-generated from the highest-scoring paper out of 20 candidates.
+
+### Checklist
+- [ ] 記事の内容を確認・修正した
+- [ ] カテゴリを確認した
+- [ ] \`Draft: true\` を削除して公開する準備ができた
+PREOF
+          )" \
+            --base main \
+            --head "$branch" \
+            --draft \
+            --label "auto-generated"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAPER_TITLE: ${{ steps.generate.outputs.title }}
+          ARXIV_ID: ${{ steps.generate.outputs.arxiv_id }}
+          ENTRY_ID: ${{ steps.draft.outputs.entry_id }}
+          EDIT_URL: ${{ steps.draft.outputs.edit_url }}
+          SCORE: ${{ steps.generate.outputs.score }}
