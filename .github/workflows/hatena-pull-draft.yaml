@@ -70,6 +70,7 @@ jobs:
             --body "Pulled draft from Hatena Blog." \
             --base main \
             --head "$branch" \
-            --draft
+            --draft \
+            --reviewer okojoalg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

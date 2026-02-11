@@ -93,6 +93,7 @@ jobs:
             --body "Moved published entries from draft_entries to entries." \
             --base main \
             --head "$branch" \
-            --label "skip-push"
+            --label "skip-push" \
+            --reviewer okojoalg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

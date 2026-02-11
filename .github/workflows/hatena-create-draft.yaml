@@ -85,6 +85,7 @@ jobs:
             --body "$body" \
             --base main \
             --head "$branch" \
-            --draft
+            --draft \
+            --reviewer okojoalg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
