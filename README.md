@@ -1,141 +1,154 @@
 # okojoai/blog
 
-Multi-platform blog article management repository. Articles are managed in Git, reviewed via Pull Requests, and automatically published to each platform on merge.
+マルチプラットフォーム対応のブログ記事管理リポジトリ。記事を Git で管理し、Pull Request でレビュー後、マージ時に各プラットフォームへ自動投稿します。
 
-## Supported Platforms
+## 対応プラットフォーム
 
-| Platform | Status | Publishing Method |
+| プラットフォーム | ステータス | 投稿方法 |
 |---|---|---|
-| [Hatena Blog](https://tech-blog.okojo.ai) | Active | Auto-publish via GitHub Actions (blogsync + AtomPub API) |
-| Zenn | Planned | GitHub integration |
-| WordPress | Planned | REST API |
-| note | Planned | Manual (no public API) |
+| [Hatena Blog](https://tech-blog.okojo.ai) | 稼働中 | GitHub Actions で自動投稿（blogsync + AtomPub API） |
+| Zenn | 予定 | GitHub 連携 |
+| WordPress | 予定 | REST API |
+| note | 予定 | 手動（公開 API なし） |
 
-## Repository Structure
+## リポジトリ構成
 
 ```
 blog/
-├── hatena/                           # Hatena Blog
-│   ├── entries/                      #   Published articles
-│   │   └── tech-blog.okojo.ai/      #     Organized by blog domain
-│   ├── draft_entries/                #   Draft articles
-│   ├── blogsync.yaml                 #   blogsync configuration
-│   └── draft.template                #   Template for new drafts
+├── hatena/                           # はてなブログ
+│   ├── entries/                      #   公開記事
+│   │   └── tech-blog.okojo.ai/      #     ブログドメイン別に整理
+│   ├── draft_entries/                #   下書き
+│   ├── scripts/                      #   自動化スクリプト
+│   │   └── generate-article.py      #     arXiv 論文から記事を自動生成
+│   ├── prompts/                      #   プロンプトテンプレート
+│   │   └── arxiv-review.md           #     論文レビュー用プロンプト
+│   ├── blogsync.yaml                 #   blogsync 設定
+│   └── draft.template                #   下書きテンプレート
 ├── .github/
-│   ├── workflows/                    # CI/CD workflows
-│   │   ├── hatena-initialize.yaml    #   Initial sync from Hatena Blog
-│   │   ├── hatena-create-draft.yaml  #   Create new draft → PR
-│   │   ├── hatena-push.yaml          #   Publish on PR merge
-│   │   ├── hatena-push-draft.yaml    #   Sync draft on PR merge
-│   │   ├── hatena-push-when-publishing.yaml  # Draft → Published
-│   │   ├── hatena-pull.yaml          #   Pull published entries
-│   │   └── hatena-pull-draft.yaml    #   Pull specific draft
-│   ├── CODEOWNERS                    # Review assignment
+│   ├── workflows/                    # CI/CD ワークフロー
+│   │   ├── hatena-auto-generate.yaml #   arXiv 論文から記事を自動生成（月〜金）
+│   │   ├── hatena-initialize.yaml    #   はてなブログから初期同期
+│   │   ├── hatena-create-draft.yaml  #   新規下書き作成 → PR
+│   │   ├── hatena-push.yaml          #   マージ時に自動投稿
+│   │   ├── hatena-push-draft.yaml    #   マージ時に下書き同期
+│   │   ├── hatena-push-when-publishing.yaml  # 下書き → 公開
+│   │   ├── hatena-pull.yaml          #   公開記事を取得
+│   │   └── hatena-pull-draft.yaml    #   特定の下書きを取得
+│   ├── CODEOWNERS                    # レビュー担当の割り当て
 │   └── PULL_REQUEST_TEMPLATE/
-│       └── draft.md                  # PR template for drafts
-├── CONTRIBUTING.md                   # Contribution guidelines
+│       └── draft.md                  # 下書き PR 用テンプレート
+├── CONTRIBUTING.md                   # 投稿ガイドライン
 └── .gitignore
 ```
 
-## Quick Start for Contributors
+## 寄稿者向けクイックスタート
 
-### 1. Create a New Article
+### 1. 新しい記事を作成する
 
-Go to **Actions** tab > **[hatena] create draft** > **Run workflow** and enter the article title.
+**Actions** タブ > **[hatena] create draft** > **Run workflow** でタイトルを入力。
 
-A draft PR will be created automatically.
+Draft PR が自動作成されます。
 
-### 2. Write the Article
+### 2. 記事を書く
 
-Edit the Markdown file in the PR branch. Articles use YAML frontmatter:
+PR ブランチで Markdown ファイルを編集します。YAML フロントマター形式：
 
 ```markdown
 ---
-Title: Your Article Title
+Title: 記事タイトル
 Category:
 - tech
 - python
 Draft: true
 ---
 
-Article body in Markdown...
+記事本文を Markdown で記述...
 ```
 
-### 3. Request Review
+### 3. レビューを依頼する
 
-Push your changes and request a review from @okojoalg.
+変更をプッシュし、@okojoalg にレビューを依頼してください。
 
-### 4. Publish
+### 4. 公開する
 
-After approval, remove `Draft: true` from the frontmatter and merge the PR. The article will be published automatically.
+承認後、フロントマターから `Draft: true` を削除してマージすると、自動的にはてなブログに公開されます。
 
-## Workflow Reference
+## ワークフロー一覧
 
-### Automatic Triggers (on PR merge to main)
+### 自動トリガー（main への PR マージ時）
 
-| Workflow | Trigger Path | Action |
+| ワークフロー | トリガーパス | 動作 |
 |---|---|---|
-| `hatena-push` | `hatena/entries/**` | Push changes to Hatena Blog |
-| `hatena-push-draft` | `hatena/draft_entries/**` | Sync draft changes to Hatena Blog |
-| `hatena-push-when-publishing` | `hatena/draft_entries/**` | Publish draft (when `Draft: true` is removed) |
+| `hatena-push` | `hatena/entries/**` | はてなブログに変更を反映 |
+| `hatena-push-draft` | `hatena/draft_entries/**` | 下書きの変更をはてなブログに同期 |
+| `hatena-push-when-publishing` | `hatena/draft_entries/**` | 下書きを公開（`Draft: true` 削除時） |
 
-### Manual Triggers (workflow_dispatch)
+### スケジュール実行
 
-| Workflow | Input | Action |
+| ワークフロー | スケジュール | 動作 |
 |---|---|---|
-| `hatena-initialize` | `is_draft_included` (bool) | Sync all existing articles from Hatena Blog |
-| `hatena-create-draft` | `title` (string) | Create a new draft and open a PR |
-| `hatena-pull` | - | Pull published articles from Hatena Blog |
-| `hatena-pull-draft` | `title` (string) | Pull a specific draft by title |
+| `hatena-auto-generate` | 月〜金 AM 10:00 JST | arXiv 論文から記事を自動生成して PR 作成 |
 
-### Skip Publishing
+### 手動トリガー（workflow_dispatch）
 
-Add the `skip-push` label to a PR to prevent auto-publishing on merge. Useful for syncing from Hatena Blog without round-tripping.
+| ワークフロー | 入力 | 動作 |
+|---|---|---|
+| `hatena-initialize` | `is_draft_included` (bool) | はてなブログの既存記事を一括同期 |
+| `hatena-create-draft` | `title` (string) | 新規下書きを作成して PR を開く |
+| `hatena-pull` | - | はてなブログから公開記事を取得 |
+| `hatena-pull-draft` | `title` (string) | タイトルで特定の下書きを取得 |
+| `hatena-auto-generate` | `category` (string, 任意) | arXiv カテゴリを指定して記事生成 |
 
-## Branch Protection Rules
+### 投稿のスキップ
 
-| Rule | Setting |
+PR に `skip-push` ラベルを付けると、マージ時の自動投稿をスキップします。はてなブログからの同期 PR で往復投稿を防ぐために使います。
+
+## ブランチ保護ルール
+
+| ルール | 設定 |
 |---|---|
-| PR required | All users (no bypass, including admins) |
-| Review required | 1 approval from CODEOWNERS (@okojoalg) |
-| Stale review dismissal | Enabled (new push invalidates approval) |
-| Branch deletion | Blocked |
-| Force push | Blocked |
+| PR 必須 | 全ユーザー対象（管理者含むバイパスなし） |
+| レビュー必須 | CODEOWNERS（@okojoalg）の承認 1 件以上 |
+| stale レビューの自動却下 | 有効（新しいプッシュで承認が無効化） |
+| ブランチ削除禁止 | 有効 |
+| Force push 禁止 | 有効 |
 
-## For Administrators
+## 管理者向け
 
-### Initial Setup
+### 初期セットアップ
 
-The following GitHub settings are required:
+以下の GitHub 設定が必要です：
 
-**Repository Variables** (Settings > Secrets and variables > Actions > Variables):
+**Repository Variables**（Settings > Secrets and variables > Actions > Variables）：
 
-| Variable | Value |
+| 変数名 | 値 |
 |---|---|
 | `BLOG_DOMAIN` | `tech-blog.okojo.ai` |
 
-**Repository Secrets** (Settings > Secrets and variables > Actions > Secrets):
+**Repository Secrets**（Settings > Secrets and variables > Actions > Secrets）：
 
-| Secret | Source |
+| シークレット | 取得元 |
 |---|---|
-| `OWNER_API_KEY` | Hatena Blog > Settings > Advanced > AtomPub |
+| `OWNER_API_KEY` | はてなブログ > 設定 > 詳細設定 > AtomPub |
+| `ANTHROPIC_API_KEY` | [Anthropic Console](https://console.anthropic.com/) |
 
-**Other Settings**:
+**その他の設定**：
 - Actions > General > Workflow permissions: **Read and write permissions**
-- Actions > General > Allow GitHub Actions to create and approve pull requests: **Enabled**
-- General > Pull Requests > Allow auto-merge: **Enabled**
+- Actions > General > Allow GitHub Actions to create and approve pull requests: **有効**
+- General > Pull Requests > Allow auto-merge: **有効**
 
-### Adding a New Platform
+### 新しいプラットフォームの追加
 
-1. Create a new directory at the repository root (e.g., `zenn/`, `wordpress/`)
-2. Add platform-specific workflows in `.github/workflows/` with prefix (e.g., `zenn-*.yaml`)
-3. Add necessary secrets/variables for the platform's API
-4. Update `CONTRIBUTING.md` with the platform's article format and workflow
-5. Workflow path triggers should scope to the platform directory (e.g., `zenn/**`)
+1. リポジトリルートに新しいディレクトリを作成（例: `zenn/`, `wordpress/`）
+2. `.github/workflows/` にプレフィックス付きワークフローを追加（例: `zenn-*.yaml`）
+3. プラットフォームの API 用シークレット/変数を追加
+4. `CONTRIBUTING.md` にそのプラットフォームの記事形式とワークフローを追記
+5. ワークフローの paths トリガーをプラットフォームディレクトリに限定（例: `zenn/**`）
 
-### blogsync Configuration
+### blogsync 設定
 
-`hatena/blogsync.yaml` maps the blog domain to the Hatena account:
+`hatena/blogsync.yaml` でブログドメインとはてなアカウントを紐付けます：
 
 ```yaml
 tech-blog.okojo.ai:
@@ -144,15 +157,15 @@ default:
   local_root: entries
 ```
 
-Workflows run with `working-directory: hatena`, so `local_root: entries` resolves to `hatena/entries/`.
+ワークフローは `working-directory: hatena` で実行されるため、`local_root: entries` は `hatena/entries/` に解決されます。
 
-## Images
+## 画像について
 
-Image files are blocked by `.gitignore`. Use external hosting:
+画像ファイルは `.gitignore` でブロックされています。外部ホスティングを使用してください：
 
-- **Hatena Blog**: Upload to [Hatena Fotolife](https://f.hatena.ne.jp/)
-- Reference via URL: `![alt text](https://cdn-ak.f.st-hatena.com/...)`
+- **はてなブログ**: [はてなフォトライフ](https://f.hatena.ne.jp/)にアップロード
+- Markdown での参照: `![代替テキスト](https://cdn-ak.f.st-hatena.com/...)`
 
-## Contributing
+## 投稿ガイドライン
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on article format, review criteria, and branch naming conventions.
+記事のフォーマット、レビュー基準、ブランチ命名規則の詳細は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
