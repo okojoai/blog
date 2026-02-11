@@ -264,6 +264,7 @@ def generate_article_with_claude(
     paper: Paper,
     prompt_template: str,
     api_key: str,
+    related_papers: list[Paper] | None = None,
 ) -> str:
     """Claude API を使って論文レビュー記事を生成する.
 
@@ -271,6 +272,7 @@ def generate_article_with_claude(
         paper: 論文メタ情報
         prompt_template: プロンプトテンプレート
         api_key: Anthropic API キー
+        related_papers: 比較表で参照可能な関連論文リスト
 
     Returns:
         生成された記事本文（Markdown）
@@ -286,7 +288,18 @@ def generate_article_with_claude(
         f"**Abstract**:\n{paper['abstract']}"
     )
 
-    user_message = f"{prompt_template}\n{paper_info}"
+    related_section = ""
+    if related_papers:
+        lines = ["\n\n# Related Papers (use these for comparison table)"]
+        for rp in related_papers:
+            lines.append(
+                f"- [{rp['title']}]({rp['url']}) "
+                f"({', '.join(rp['categories'][:3])}): "
+                f"{rp['abstract'][:200]}..."
+            )
+        related_section = "\n".join(lines)
+
+    user_message = f"{prompt_template}\n{paper_info}{related_section}"
     return _call_claude_api(api_key, CLAUDE_MODEL, user_message, MAX_TOKENS)
 
 
@@ -427,10 +440,15 @@ def main() -> None:
     if score_reason:
         print(f"  Reason: {score_reason}")
 
+    # 関連論文 = 選定された論文以外の候補
+    related_papers = [p for p in candidates if p["arxiv_id"] != paper["arxiv_id"]]
+
     # Claude API で記事生成
-    print("Generating article with Claude API...")
+    print(f"Generating article with {len(related_papers)} related papers as context...")
     try:
-        article_body = generate_article_with_claude(paper, prompt_template, api_key)
+        article_body = generate_article_with_claude(
+            paper, prompt_template, api_key, related_papers=related_papers,
+        )
     except HTTPError as e:
         print(f"Error calling Claude API: {e}", file=sys.stderr)
         sys.exit(1)
