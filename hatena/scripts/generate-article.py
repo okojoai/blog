@@ -316,7 +316,7 @@ Draft: true
 
 
 def build_footer(paper: Paper) -> str:
-    """記事のフッター（原論文リンク + AI生成注記）を生成する.
+    """記事のフッター（原論文リンク）を生成する.
 
     Args:
         paper: 論文メタ情報
@@ -327,8 +327,6 @@ def build_footer(paper: Paper) -> str:
     return (
         "\n---\n"
         f"> **原論文**: [{paper['title']}]({paper['url']})\n"
-        "> \n"
-        "> **この記事は AI によって生成された下書きです。公開前に人間のレビューが必要です。**\n"
     )
 
 
