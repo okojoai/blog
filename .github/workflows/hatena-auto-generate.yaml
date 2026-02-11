@@ -106,27 +106,30 @@ jobs:
           git commit -m "docs(hatena): auto-generate article - ${ARXIV_ID}"
           git push origin "$branch"
 
+          body=$(cat <<PREOF
+          ## Article Auto-Generated from arXiv
+
+          - **arXiv**: https://arxiv.org/abs/${ARXIV_ID}
+          - **Quality Score**: ${SCORE}/30
+          - [Edit on Hatena Blog](${EDIT_URL})
+
+          > Auto-generated from the highest-scoring paper out of 20 candidates.
+
+          ### Checklist
+          - [ ] 記事の内容を確認・修正した
+          - [ ] カテゴリを確認した
+          - [ ] \`Draft: true\` を削除して公開する準備ができた
+          PREOF
+          )
+
           gh pr create \
             --title "【論文読み】${PAPER_TITLE}" \
-            --body "$(cat <<PREOF
-## Article Auto-Generated from arXiv
-
-- **arXiv**: https://arxiv.org/abs/${ARXIV_ID}
-- **Quality Score**: ${SCORE}/30
-- [Edit on Hatena Blog](${EDIT_URL})
-
-> Auto-generated from the highest-scoring paper out of 20 candidates.
-
-### Checklist
-- [ ] 記事の内容を確認・修正した
-- [ ] カテゴリを確認した
-- [ ] \`Draft: true\` を削除して公開する準備ができた
-PREOF
-          )" \
+            --body "$body" \
             --base main \
             --head "$branch" \
             --draft \
-            --label "auto-generated"
+            --label "auto-generated" \
+            --reviewer okojoalg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PAPER_TITLE: ${{ steps.generate.outputs.title }}
