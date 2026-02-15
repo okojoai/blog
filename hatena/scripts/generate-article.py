@@ -53,32 +53,9 @@ class Paper(TypedDict):
     pdf_url: str
 
 
-def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
-    """arXiv API から最新論文を取得する.
-
-    Args:
-        category: arXiv カテゴリ (e.g., "cs.CV")
-        max_results: 取得する最大件数
-
-    Returns:
-        論文のリスト（新しい順）
-    """
-    query = f"cat:{category}"
-    params = (
-        f"search_query={query}"
-        f"&sortBy=submittedDate"
-        f"&sortOrder=descending"
-        f"&max_results={max_results}"
-    )
-    url = f"{ARXIV_API_URL}?{params}"
-
-    req = Request(url)
-    with urlopen(req, timeout=30) as resp:
-        xml_data = resp.read()
-
-    root = ET.fromstring(xml_data)
+def _parse_arxiv_entries(root: ET.Element) -> list[Paper]:
+    """arXiv API レスポンスの XML から Paper リストをパースする."""
     papers: list[Paper] = []
-
     for entry in root.findall(f"{ATOM_NS}entry"):
         arxiv_id_full = entry.findtext(f"{ATOM_NS}id", "")
         arxiv_id = arxiv_id_full.split("/abs/")[-1] if "/abs/" in arxiv_id_full else arxiv_id_full
@@ -118,8 +95,139 @@ def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
                 pdf_url=pdf_url or f"https://arxiv.org/pdf/{arxiv_id}",
             )
         )
-
     return papers
+
+
+def fetch_papers_by_ids(arxiv_ids: list[str]) -> list[Paper]:
+    """arXiv API で ID リストから論文を一括取得する.
+
+    Args:
+        arxiv_ids: arXiv ID のリスト
+
+    Returns:
+        論文のリスト
+    """
+    if not arxiv_ids:
+        return []
+
+    id_list = ",".join(arxiv_ids)
+    url = f"{ARXIV_API_URL}?id_list={id_list}&max_results={len(arxiv_ids)}"
+
+    try:
+        req = Request(url)
+        with urlopen(req, timeout=30) as resp:
+            xml_data = resp.read()
+        root = ET.fromstring(xml_data)
+        return _parse_arxiv_entries(root)
+    except (HTTPError, ET.ParseError, TimeoutError):
+        return []
+
+
+def fetch_experiment_references(arxiv_id: str) -> tuple[list[str], list[str]]:
+    """arXiv HTML から Experiments セクションの引用論文を取得する.
+
+    対象論文の HTML 版を取得し、Experiments セクション内の引用を抽出。
+    Bibliography セクションで bib ID → arXiv ID をマッピングする。
+
+    Args:
+        arxiv_id: 対象論文の arXiv ID
+
+    Returns:
+        (arXiv ID のリスト, arXiv にない論文のタイトルリスト)
+    """
+    import re
+
+    html_url = f"https://arxiv.org/html/{arxiv_id}"
+    try:
+        req = Request(html_url)
+        with urlopen(req, timeout=30) as resp:
+            html = resp.read().decode("utf-8", errors="replace")
+    except (HTTPError, TimeoutError, OSError):
+        return [], []
+
+    # h2 タグからセクション境界を特定
+    h2_pattern = re.compile(r"<h2[^>]*>.*?</h2>", re.DOTALL)
+    h2_matches = [(m.start(), m.end(), re.sub(r"<[^>]+>", "", m.group(0)).strip()) for m in h2_pattern.finditer(html)]
+
+    # Experiments セクションの範囲を取得
+    exp_html = ""
+    for i, (start, end, title) in enumerate(h2_matches):
+        if "experiment" in title.lower():
+            next_start = h2_matches[i + 1][0] if i + 1 < len(h2_matches) else len(html)
+            exp_html = html[end:next_start]
+            break
+
+    if not exp_html:
+        return [], []
+
+    # Experiments セクション内の bib 引用を抽出
+    exp_bib_ids = sorted(set(re.findall(r"#(bib\.bib\d+)", exp_html)))
+
+    # Bibliography セクションで bib ID → arXiv ID / タイトルをマッピング
+    bib_start = html.find('class="ltx_bibliography"')
+    if bib_start == -1:
+        return [], []
+
+    bib_section = html[bib_start:]
+    bib_to_arxiv: dict[str, str] = {}
+    bib_to_title: dict[str, str] = {}
+
+    for m in re.finditer(r'id="(bib\.bib\d+)"(.*?)(?=id="bib\.bib\d+"|</ol>)', bib_section, re.DOTALL):
+        bib_id = m.group(1)
+        content = m.group(2)
+
+        # arXiv ID を抽出
+        arxiv_matches = re.findall(r"arxiv\.org/abs/(\d{4}\.\d{4,5}(?:v\d+)?)", content)
+        if arxiv_matches:
+            bib_to_arxiv[bib_id] = arxiv_matches[0].split("v")[0]
+
+        # タイトルを抽出（HTML タグ除去後、引用番号以降のテキスト）
+        text = re.sub(r"<[^>]+>", "", content).strip()
+        text = " ".join(text.split())[:200]
+        bib_to_title[bib_id] = text
+
+    # Experiments セクションの引用を分類
+    arxiv_ids_found: list[str] = []
+    non_arxiv_titles: list[str] = []
+    seen: set[str] = set()
+
+    for bib_id in exp_bib_ids:
+        if bib_id in bib_to_arxiv:
+            aid = bib_to_arxiv[bib_id]
+            if aid != arxiv_id.split("v")[0] and aid not in seen:
+                arxiv_ids_found.append(aid)
+                seen.add(aid)
+        elif bib_id in bib_to_title:
+            non_arxiv_titles.append(bib_to_title[bib_id])
+
+    return arxiv_ids_found, non_arxiv_titles
+
+
+def fetch_arxiv_papers(category: str, max_results: int = 10) -> list[Paper]:
+    """arXiv API から最新論文を取得する.
+
+    Args:
+        category: arXiv カテゴリ (e.g., "cs.CV")
+        max_results: 取得する最大件数
+
+    Returns:
+        論文のリスト（新しい順）
+    """
+    query = f"cat:{category}"
+    params = (
+        f"search_query={query}"
+        f"&sortBy=submittedDate"
+        f"&sortOrder=descending"
+        f"&max_results={max_results}"
+    )
+    url = f"{ARXIV_API_URL}?{params}"
+
+    req = Request(url)
+    with urlopen(req, timeout=30) as resp:
+        xml_data = resp.read()
+
+    root = ET.fromstring(xml_data)
+    return _parse_arxiv_entries(root)
 
 
 def find_existing_arxiv_ids(entries_dir: Path, drafts_dir: Path) -> set[str]:
@@ -264,6 +372,8 @@ def generate_article_with_claude(
     paper: Paper,
     prompt_template: str,
     api_key: str,
+    related_papers: list[Paper] | None = None,
+    non_arxiv_methods: list[str] | None = None,
 ) -> str:
     """Claude API を使って論文レビュー記事を生成する.
 
@@ -271,6 +381,8 @@ def generate_article_with_claude(
         paper: 論文メタ情報
         prompt_template: プロンプトテンプレート
         api_key: Anthropic API キー
+        related_papers: Experiments セクションで引用されている論文（arXiv から取得済み）
+        non_arxiv_methods: arXiv にない比較手法の書誌情報
 
     Returns:
         生成された記事本文（Markdown）
@@ -286,7 +398,28 @@ def generate_article_with_claude(
         f"**Abstract**:\n{paper['abstract']}"
     )
 
-    user_message = f"{prompt_template}\n{paper_info}"
+    ref_section = ""
+    if related_papers or non_arxiv_methods:
+        lines = [
+            "\n\n# Comparison Baselines (from Experiments section)",
+            "These are methods directly compared in the paper's experiments.",
+            "Use these for the comparison table. Cite with their arXiv URLs.",
+            "",
+        ]
+        for rp in (related_papers or []):
+            lines.append(
+                f"### [{rp['title']}]({rp['url']})\n"
+                f"- **Authors**: {', '.join(rp['authors'][:5])}\n"
+                f"- **Categories**: {', '.join(rp['categories'][:3])}\n"
+                f"- **Abstract**: {rp['abstract']}\n"
+            )
+        if non_arxiv_methods:
+            lines.append("### Other baselines (no arXiv URL available)")
+            for title in non_arxiv_methods:
+                lines.append(f"- {title}")
+        ref_section = "\n".join(lines)
+
+    user_message = f"{prompt_template}\n{paper_info}{ref_section}"
     return _call_claude_api(api_key, CLAUDE_MODEL, user_message, MAX_TOKENS)
 
 
@@ -316,7 +449,7 @@ Draft: true
 
 
 def build_footer(paper: Paper) -> str:
-    """記事のフッター（原論文リンク + AI生成注記）を生成する.
+    """記事のフッター（原論文リンク）を生成する.
 
     Args:
         paper: 論文メタ情報
@@ -327,8 +460,6 @@ def build_footer(paper: Paper) -> str:
     return (
         "\n---\n"
         f"> **原論文**: [{paper['title']}]({paper['url']})\n"
-        "> \n"
-        "> **この記事は AI によって生成された下書きです。公開前に人間のレビューが必要です。**\n"
     )
 
 
@@ -429,10 +560,27 @@ def main() -> None:
     if score_reason:
         print(f"  Reason: {score_reason}")
 
+    # Experiments セクションから直接比較手法の論文を取得
+    print("Fetching experiment baselines from arXiv HTML...")
+    ref_arxiv_ids, non_arxiv_titles = fetch_experiment_references(paper["arxiv_id"])
+    if ref_arxiv_ids:
+        print(f"  Found {len(ref_arxiv_ids)} arXiv references, fetching details...")
+        reference_papers = fetch_papers_by_ids(ref_arxiv_ids)
+        print(f"  Fetched {len(reference_papers)} reference papers")
+    else:
+        reference_papers = []
+        print("  No arXiv references found in Experiments section")
+    if non_arxiv_titles:
+        print(f"  Also found {len(non_arxiv_titles)} non-arXiv baselines")
+
     # Claude API で記事生成
-    print("Generating article with Claude API...")
+    print(f"Generating article with {len(reference_papers)} baseline papers as context...")
     try:
-        article_body = generate_article_with_claude(paper, prompt_template, api_key)
+        article_body = generate_article_with_claude(
+            paper, prompt_template, api_key,
+            related_papers=reference_papers,
+            non_arxiv_methods=non_arxiv_titles,
+        )
     except HTTPError as e:
         print(f"Error calling Claude API: {e}", file=sys.stderr)
         sys.exit(1)
